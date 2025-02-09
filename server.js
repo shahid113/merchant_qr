@@ -97,12 +97,12 @@ async function generateQRCode(req, merchantId) {
 // Function to delete recent transaction files after 2 minutes
 function deleteRecentTransactionFiles(merchantId) {
     setTimeout(() => {
-        const merchantData = merchants[merchantId];
-        if (merchantData && merchantData.files.length > 0) {
-            merchantData.files = [];
-            const sanitizedMerchantId = merchantId.replace(/:/g, "-");
-            fs.writeFileSync(path.join(DATA_DIR, `${sanitizedMerchantId}.json`), JSON.stringify(merchantData));
-            console.log(`Deleted recent transaction files for merchant ${merchantId}`);
+        const sanitizedMerchantId = merchantId.replace(/:/g, "-");
+        const filePath = path.join(DATA_DIR, `${sanitizedMerchantId}.json`);
+        
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Deleted recent transaction file for merchant ${merchantId}`);
         }
     }, 2 * 60 * 1000); // 2 minutes
 }
