@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merchant Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { background-color: #f8f9fa; }
+        .card { border-radius: 10px; box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1); }
+        .qr-container { text-align: center; }
+        .qr-container img { width: 200px; margin-top: 10px; }
+        .print-btn { margin-top: 10px; }
+
+        .transfer-list-container {
+            max-height: 400px;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        @media (max-width: 768px) {
+            .transfer-list-container {
+                max-height: 200px;
+            }
+            .list-group-item {
+                white-space: normal;
+                word-wrap: break-word;
+            }
+        }
+
+        .list-group-item {
+            display: flex;
+            align-items: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+            padding: 8px 12px;
+        }
+
+        .file-name {
+            max-width: 150px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            display: inline-block;
+        }
+
+        /* Print Styling */
+        @media print {
+            body * { visibility: hidden; }
+            #printArea, #printArea * { visibility: visible; }
+            #printArea { position: absolute; left: 0; top: 0; width: 100%; }
+        }
+    </style>
+</head>
+<body class="container mt-5">
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card p-4">
+                <h3>Merchant Dashboard</h3>
+                <p>Your unique QR code (Permanent):</p>
+                <div class="qr-container">
+                    <img id="qrCode" src="" alt="QR Code">
+                </div>
+                <div class="d-flex justify-content-center">
+                    <button class="btn btn-success btn-sm mt-2" onclick="printQR()">Print QR Code</button>
+                </div>
+                <p class="mt-3"><strong>Merchant ID:</strong> <span id="merchantId"></span></p>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card p-4">
+                <h3>Recent Transfers</h3>
+                <div class="transfer-list-container">
+                    <ul id="fileList" class="list-group"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Print Section (Hidden by Default) -->
+    <div id="printArea" style="display: none;">
+        <div style="text-align: center; padding: 40px;">
+            <h2>Scan this QR to Transfer File</h2>
+            <img id="printQrCode" src="" style="width: 300px; margin-top: 20px;">
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let merchantId = "";
+
+        async function loadMerchantData() {
+            const response = await fetch("/merchant-data");
+            const data = await response.json();
+            
+            merchantId = data.macAddress;
+            document.getElementById("qrCode").src = data.qrCode;
+            document.getElementById("merchantId").textContent = merchantId;
+
+            // Join WebSocket room for real-time updates
+            socket.emit("join", merchantId);
+
+            // Load existing file history
+            updateFileList(data.files);
+        }
+
+        function updateFileList(files) {
+            const fileList = document.getElementById("fileList");
+            fileList.innerHTML = "";
+            files.forEach(file => {
+                addFileToUI(file);
+            });
+        }
+
+        function addFileToUI(file) {
+            const fileList = document.getElementById("fileList");
+            const li = document.createElement("li");
+            li.className = "list-group-item d-flex justify-content-between align-items-center";
+
+            // Truncate long file names & add tooltip
+            const shortFileName = file.fileName.length > 20 ? file.fileName.substring(0, 20) + "..." : file.fileName;
+
+            li.innerHTML = `
+                <span class="file-name" title="${file.fileName}">${shortFileName} <small class="text-muted">(${file.timestamp})</small></span>
+                <a href="${file.fileData}" download="${file.fileName}" class="btn btn-sm btn-success">Download</a>
+            `;
+
+            fileList.prepend(li);
+        }
+
+        function printQR() {
+            // Set QR code image for printing
+            document.getElementById("printQrCode").src = document.getElementById("qrCode").src;
+
+            // Show print dialog
+            document.getElementById("printArea").style.display = "block";
+            window.print();
+            document.getElementById("printArea").style.display = "none";
+        }
+
+        // Load Data on Page Load
+        loadMerchantData();
+
+        // Listen for New File Transfers (Real-Time Update)
+        socket.on("receiveFile", (file) => {
+            addFileToUI(file);
+        });
+    </script>
+
+</body>
+</html>
