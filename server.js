@@ -4,6 +4,7 @@ const socketIo = require("socket.io");
 const os = require("os");
 const QRCode = require("qrcode");
 const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
@@ -11,15 +12,21 @@ const io = socketIo(server);
 
 app.use(express.static("public"));
 
-const DATA_FILE = "merchant_data.json";
-let merchantData = {};
+const DATA_DIR = "merchant_data";
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR);
+}
+
+let merchants = {};
 
 // Load existing merchant data
-function loadMerchantData() {
-    if (fs.existsSync(DATA_FILE)) {
-        merchantData = JSON.parse(fs.readFileSync(DATA_FILE));
+function loadMerchantData(merchantId) {
+    const sanitizedMerchantId = merchantId.replace(/:/g, "-");
+    const dataFile = path.join(DATA_DIR, `${sanitizedMerchantId}.json`);
+    if (fs.existsSync(dataFile)) {
+        return JSON.parse(fs.readFileSync(dataFile));
     } else {
-        merchantData = {
+        return {
             qrCode: null,
             macAddress: null,
             files: []
@@ -41,8 +48,9 @@ function getMacAddress() {
 }
 
 // Check if MAC address has changed and update accordingly
-function checkAndUpdateMacAddress() {
+function checkAndUpdateMacAddress(merchantId) {
     const currentMacAddress = getMacAddress();
+    const merchantData = merchants[merchantId];
     
     // Initialize merchant data if it doesn't exist
     if (!merchantData.macAddress) {
@@ -53,7 +61,7 @@ function checkAndUpdateMacAddress() {
     
     // Check if MAC address has changed
     if (merchantData.macAddress !== currentMacAddress) {
-        console.log("MAC address changed. Generating new QR code...");
+        console.log(`MAC address changed for merchant ${merchantId}. Generating new QR code...`);
         merchantData.macAddress = currentMacAddress;
         merchantData.qrCode = null;
         return true;
@@ -63,9 +71,9 @@ function checkAndUpdateMacAddress() {
 }
 
 // Generate QR Code
-async function generateQRCode(req) {
-    // Check if MAC address has changed or QR code doesn't exist
-    const macChanged = checkAndUpdateMacAddress();
+async function generateQRCode(req, merchantId) {
+    const merchantData = merchants[merchantId];
+    const macChanged = checkAndUpdateMacAddress(merchantId);
     
     if (macChanged || !merchantData.qrCode) {
         const host = req.headers.host;
@@ -74,10 +82,11 @@ async function generateQRCode(req) {
         
         try {
             merchantData.qrCode = await QRCode.toDataURL(url);
-            fs.writeFileSync(DATA_FILE, JSON.stringify(merchantData));
-            console.log("New QR code generated successfully");
+            const sanitizedMerchantId = merchantId.replace(/:/g, "-");
+            fs.writeFileSync(path.join(DATA_DIR, `${sanitizedMerchantId}.json`), JSON.stringify(merchantData));
+            console.log(`New QR code generated successfully for merchant ${merchantId}`);
         } catch (error) {
-            console.error("Error generating QR code:", error);
+            console.error(`Error generating QR code for merchant ${merchantId}:`, error);
             throw error;
         }
     }
@@ -85,26 +94,43 @@ async function generateQRCode(req) {
     return merchantData.qrCode;
 }
 
-// Initialize data on server start
-loadMerchantData();
+// Function to delete recent transaction files after 2 minutes
+function deleteRecentTransactionFiles(merchantId) {
+    setTimeout(() => {
+        const merchantData = merchants[merchantId];
+        if (merchantData && merchantData.files.length > 0) {
+            merchantData.files = [];
+            const sanitizedMerchantId = merchantId.replace(/:/g, "-");
+            fs.writeFileSync(path.join(DATA_DIR, `${sanitizedMerchantId}.json`), JSON.stringify(merchantData));
+            console.log(`Deleted recent transaction files for merchant ${merchantId}`);
+        }
+    }, 2 * 60 * 1000); // 2 minutes
+}
 
 // Endpoint to get merchant data
 app.get("/merchant-data", async (req, res) => {
+    const merchantId = getMacAddress();
+    if (!merchants[merchantId]) {
+        merchants[merchantId] = loadMerchantData(merchantId);
+    }
     try {
-        // Ensure QR code is up to date with current MAC address
-        await generateQRCode(req);
-        res.json(merchantData);
+        await generateQRCode(req, merchantId);
+        res.json(merchants[merchantId]);
     } catch (error) {
         res.status(500).json({ error: "Failed to generate merchant data" });
     }
 });
 
 app.get("/merchant-dashboard", async (req, res) => {
+    const merchantId = getMacAddress();
+    if (!merchants[merchantId]) {
+        merchants[merchantId] = loadMerchantData(merchantId);
+    }
     try {
-        const qrCode = await generateQRCode(req);
+        const qrCode = await generateQRCode(req, merchantId);
         res.render("merchant-dashboard", { 
             qrCode: qrCode, 
-            transfers: merchantData.files 
+            transfers: merchants[merchantId].files 
         });
     } catch (error) {
         res.status(500).send("Error generating dashboard");
@@ -115,37 +141,53 @@ app.get("/merchant-dashboard", async (req, res) => {
 io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    socket.on("join", (merchantId) => {
+    socket.on("join", () => {
+        const merchantId = getMacAddress();
         socket.join(merchantId);
-        io.emit("merchantStatus", "online");
+        io.to(merchantId).emit("merchantStatus", "online");
     });
 
-    socket.on("checkMerchantStatus", (merchantId) => {
+    socket.on("checkMerchantStatus", () => {
+        const merchantId = getMacAddress();
         const isMerchantOnline = io.sockets.adapter.rooms.get(merchantId);
         socket.emit("merchantStatus", isMerchantOnline ? "online" : "offline");
     });
 
-    socket.on("sendFile", ({ merchantId, fileData, fileName }) => {
-        console.log(`Receiving file: ${fileName}`);
+    socket.on("sendFile", ({ fileData, fileName }) => {
+        const merchantId = getMacAddress();
+        console.log(`Receiving file: ${fileName} for merchant ${merchantId}`);
+
+        if (!merchants[merchantId]) {
+            merchants[merchantId] = loadMerchantData(merchantId);
+        }
 
         const fileRecord = { 
             fileName, 
             fileData, 
             timestamp: new Date().toLocaleString() 
         };
-        merchantData.files.push(fileRecord);
+        merchants[merchantId].files.push(fileRecord);
         
         try {
-            fs.writeFileSync(DATA_FILE, JSON.stringify(merchantData));
+            const sanitizedMerchantId = merchantId.replace(/:/g, "-");
+            const merchantDir = path.join(DATA_DIR, sanitizedMerchantId);
+            if (!fs.existsSync(merchantDir)) {
+                fs.mkdirSync(merchantDir);
+            }
+            fs.writeFileSync(path.join(merchantDir, `${sanitizedMerchantId}.json`), JSON.stringify(merchants[merchantId]));
             io.to(merchantId).emit("receiveFile", fileRecord);
+
+            // Schedule deletion of recent transaction files
+            deleteRecentTransactionFiles(merchantId);
         } catch (error) {
-            console.error("Error saving file record:", error);
+            console.error(`Error saving file record for merchant ${merchantId}:`, error);
             socket.emit("error", "Failed to save file record");
         }
     });
 
     socket.on("disconnect", () => {
-        io.emit("merchantStatus", "offline");
+        const merchantId = getMacAddress();
+        io.to(merchantId).emit("merchantStatus", "offline");
     });
 });
 

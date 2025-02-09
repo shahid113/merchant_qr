@@ -92,18 +92,16 @@
 
     <script>
         const socket = io();
-        let merchantId = "";
 
         async function loadMerchantData() {
-            const response = await fetch("/merchant-data");
+            const response = await fetch(`/merchant-data`);
             const data = await response.json();
             
-            merchantId = data.macAddress;
             document.getElementById("qrCode").src = data.qrCode;
-            document.getElementById("merchantId").textContent = merchantId;
+            document.getElementById("merchantId").textContent = data.macAddress;
 
             // Join WebSocket room for real-time updates
-            socket.emit("join", merchantId);
+            socket.emit("join");
 
             // Load existing file history
             updateFileList(data.files);
@@ -143,7 +141,7 @@
             document.getElementById("printArea").style.display = "none";
         }
 
-        // Load Data on Page Load
+        // Load merchant data on page load
         loadMerchantData();
 
         // Listen for New File Transfers (Real-Time Update)
